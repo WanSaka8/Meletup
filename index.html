@@ -566,16 +566,17 @@ function collectUrls(obj, urls = []) {
   return urls;
 }
 
+
 function categorizeUrls(urls = []) {
   const unique = [...new Set(urls.map(u => (u || '').trim()).filter(Boolean))];
-  
+
   const patterns = {
     video: /\.(mp4|webm|mov|mkv|m4v|avi|flv|wmv|3gp)(\?|$|#)/i,
     audio: /\.(mp3|m4a|wav|aac|ogg|opus|flac)(\?|$|#)/i,
     image: /\.(jpe?g|png|gif|webp|bmp|svg|ico)(\?|$|#)/i,
     m3u8: /\.m3u8(\?|$|#)/i
   };
-  
+
   const categorized = {
     videos: [],
     audios: [],
@@ -583,44 +584,43 @@ function categorizeUrls(urls = []) {
     m3u8: [],
     others: []
   };
-  
+
   unique.forEach(url => {
-    // Clean URL
-    url = url.replace(/&amp;/g, '&').replace(/\\u0026/g, '&');
-    
-    // Check by extension or URL pattern
-    if(patterns.video.test(url) || 
-       url.includes('/video/') || 
-       url.includes('video.') ||
-       url.includes('fbcdn.net/v/') ||
-       (url.includes('googlevideo.com') && !url.includes('audio'))) {
-      categorized.videos.push(url);
-    } else if(patterns.m3u8.test(url)) {
-      categorized.m3u8.push(url);
-    } else if(patterns.audio.test(url) || 
-              url.includes('/audio/') || 
-              url.includes('audio.') ||
-              (url.includes('googlevideo.com') && url.includes('audio'))) {
-      categorized.audios.push(url);
-    } else if(patterns.image.test(url) || 
-              url.includes('/image/') || 
-              url.includes('/photo')) {
+    url = url.replace(/&amp;/g, '&').replace(/\u0026/g, '&');
+
+    // Prefer exact extension matches first (auto-detect)
+    if (patterns.image.test(url)) {
       categorized.images.push(url);
+      return;
+    }
+    if (patterns.video.test(url)) {
+      categorized.videos.push(url);
+      return;
+    }
+    if (patterns.audio.test(url)) {
+      categorized.audios.push(url);
+      return;
+    }
+    if (patterns.m3u8.test(url)) {
+      categorized.m3u8.push(url);
+      return;
+    }
+
+    // Heuristics for known hosts when no extension present
+    const lower = url.toLowerCase();
+    if (lower.includes('googlevideo.com') || lower.includes('fbcdn') || lower.includes('cdn') || lower.includes('video')) {
+      categorized.videos.push(url);
+    } else if (lower.includes('instagram') && lower.includes('scontent')) {
+      // instagram scontent URLs can be images or videos; keep as others to avoid misclassifying
+      categorized.others.push(url);
     } else {
-      // Check for video indicators without extension
-      if(url.includes('fbcdn') || 
-         url.includes('instagram') && url.includes('/v/') ||
-         url.includes('stream') ||
-         url.includes('video')) {
-        categorized.videos.push(url);
-      } else {
-        categorized.others.push(url);
-      }
+      categorized.others.push(url);
     }
   });
-  
+
   return categorized;
 }
+
 
 function pickBestVideo(videos = []) {
   if(!videos.length) return null;
@@ -693,26 +693,53 @@ async function mainFetch() {
     // Update debug info
     debugEl.textContent = JSON.stringify(json, null, 2);
     
+    
     // Collect all URLs from response
     let allUrls = collectUrls(json);
-    
-    // Special handling for specific API structures
+
     if(json && json.data) {
       const data = json.data;
-      
-      // YouTube specific
+
+      // YouTube specific handling: support multiple possible fields
       if(platform === 'ytmp4' || platform === 'ytmp3') {
-        if(data.video) allUrls.push(data.video);
-        if(data.audio) allUrls.push(data.audio);
-        if(data.url) allUrls.push(data.url);
-        if(data.download) allUrls.push(data.download);
-        if(data.link) allUrls.push(data.link);
+        // common direct fields
+        ['video','audio','url','download','link','source','file','mp4','hd','sd'].forEach(k => {
+          if(data[k]) {
+            if(typeof data[k] === 'string') allUrls.push(data[k]);
+            else if(Array.isArray(data[k])) allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
+            else if(typeof data[k] === 'object' && data[k].url) allUrls.push(data[k].url);
+          }
+        });
+
+        // array of links/formats
+        if(data.links && Array.isArray(data.links)) {
+          allUrls = allUrls.concat(data.links.map(i => i.url || i.link || i.download).filter(Boolean));
+        }
+        if(data.formats && Array.isArray(data.formats)) {
+          allUrls = allUrls.concat(data.formats.map(i => i.url || i.link || i.download).filter(Boolean));
+        }
       }
-      
-      // Check common fields
-      ['video', 'videos', 'videoUrl', 'video_url', 'media', 'mediaUrl',
-       'download', 'downloadUrl', 'dlink', 'url', 'link', 'file',
-       'mp4', 'hd', 'sd', 'source'].forEach(key => {
+
+      // Facebook specific handling: prefer hd/sd video fields, avoid thumbnails
+      if(platform === 'facebook') {
+        if(data.hd && typeof data.hd === 'string') allUrls.push(data.hd);
+        if(data.sd && typeof data.sd === 'string') allUrls.push(data.sd);
+
+        // sometimes facebook returns an array or object of files
+        ['video','videos','file','download','url','link'].forEach(k => {
+          if(data[k]) {
+            if(typeof data[k] === 'string') allUrls.push(data[k]);
+            else if(Array.isArray(data[k])) allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
+            else if(typeof data[k] === 'object' && data[k].url) allUrls.push(data[k].url);
+          }
+        });
+
+        // audio fallback
+        if(data.audio && typeof data.audio === 'string') allUrls.push(data.audio);
+      }
+
+      // Generic fields fallback for other platforms
+      ['video','videos','videoUrl','video_url','media','mediaUrl','download','downloadUrl','dlink','url','link','file','mp4','hd','sd','source'].forEach(key => {
         if(data[key]) {
           if(typeof data[key] === 'string') {
             allUrls.push(data[key]);
@@ -726,12 +753,7 @@ async function mainFetch() {
         }
       });
     }
-    
-    // Also check result field
-    if(json && json.result) {
-      allUrls = allUrls.concat(collectUrls(json.result));
-    }
-    
+
     // Categorize URLs
     const categorized = categorizeUrls(allUrls);
     
@@ -804,6 +826,243 @@ function extractMetadata(json) {
   return meta;
 }
 
+
+/* --- START: Enhanced detection + multi-render + Download All --- */
+
+// Try to detect content-type via HEAD request; returns mime or null
+async function detectContentType(url) {
+  try {
+    const resp = await fetch(url, { method: 'HEAD' });
+    if(resp && resp.headers) {
+      const ct = resp.headers.get('content-type');
+      if(ct) return ct.split(';')[0].trim();
+    }
+  } catch(e) {
+    // HEAD may be blocked by CORS; try to fetch small range
+    try {
+      const r = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-1023' } });
+      const ct = r.headers.get('content-type');
+      if(ct) return ct.split(';')[0].trim();
+    } catch(err) {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Determine media type for a given url using extension + content-type fallback
+
+// Determine media type for a given url using extension + content-type fallback
+async function determineMediaType(url) {
+  const lower = (url || '').toLowerCase();
+  // direct extension checks
+  if(/\.(jpe?g|png|gif|webp|bmp|svg|ico)(\?|$|#)/i.test(lower)) return 'image';
+  if(/\.(mp4|webm|mov|mkv|m4v|avi|flv|wmv|3gp)(\?|$|#)/i.test(lower)) return 'video';
+  if(/\.(mp3|m4a|wav|aac|ogg|opus|flac)(\?|$|#)/i.test(lower)) return 'audio';
+
+  // try HEAD to get content-type (may be blocked by CORS)
+  const ct = await detectContentType(url);
+  if(ct) {
+    if(ct.startsWith('image/')) return 'image';
+    if(ct.startsWith('video/')) return 'video';
+    if(ct.startsWith('audio/')) return 'audio';
+  }
+
+  // host-specific hints (only when ct unavailable)
+  if(lower.includes('googlevideo.com')) return 'video'; // youtube CDN very likely video/audio
+  if(lower.includes('fbcdn.net') && lower.includes('.mp4')) return 'video';
+  if(lower.includes('instagram') && lower.includes('vp')) return 'video'; // instagram video pattern
+  if(lower.includes('instagram') && lower.includes('scontent')) return 'image'; // instagram images often scontent
+
+  // couldn't determine
+  return 'unknown';
+}
+
+
+// Render multiple media items and provide Download All
+async function renderMediaMulti(categorized, metadata, platform) {
+  previewArea.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'preview-card';
+
+  if(metadata && metadata.title) {
+    const title = document.createElement('h2');
+    title.className = 'media-title';
+    title.textContent = metadata.title;
+    card.appendChild(title);
+  }
+
+  // gather all urls ordered: images then videos then audios then others
+  const all = [].concat(categorized.images, categorized.videos, categorized.audios, categorized.m3u8, categorized.others);
+
+  // Resolve exact types for ambiguous URLs
+  const resolved = [];
+  for(const u of all) {
+    const t = await determineMediaType(u);
+    resolved.push({ url: u, type: t });
+  }
+
+  // create container for items
+  const itemsWrap = document.createElement('div');
+  itemsWrap.style.display = 'grid';
+  itemsWrap.style.gridTemplateColumns = 'repeat(auto-fit,minmax(240px,1fr))';
+  itemsWrap.style.gap = '12px';
+
+  // create download all button
+  const downloadAllBtn = document.createElement('button');
+  downloadAllBtn.className = 'btn-download';
+  downloadAllBtn.textContent = '⬇️ Download All';
+  downloadAllBtn.style.marginBottom = '10px';
+
+  // when clicked, attempt to zip using JSZip; fallback to sequential downloads
+  downloadAllBtn.onclick = async () => {
+    downloadAllBtn.disabled = true;
+    downloadAllBtn.textContent = '🔄 Preparing...';
+    // try load JSZip dynamically
+    let JSZip = null;
+    try {
+      if(!window.JSZip) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+          s.onload = () => res();
+          s.onerror = () => rej(new Error('Failed to load JSZip'));
+          document.head.appendChild(s);
+        });
+      }
+      JSZip = window.JSZip;
+    } catch(e) {
+      JSZip = null;
+    }
+
+    if(JSZip) {
+      try {
+        const zip = new JSZip();
+        // fetch each file as blob and add to zip
+        for(const [i, it] of resolved.entries()) {
+          try {
+            const r = await fetch(it.url);
+            if(!r.ok) throw new Error('HTTP ' + r.status);
+            const blob = await r.blob();
+            // decide extension
+            let ext = '.bin';
+            if(it.type === 'image') ext = '.jpg';
+            else if(it.type === 'video') ext = '.mp4';
+            else if(it.type === 'audio') ext = '.mp3';
+            zip.file(('file_' + (i+1) + ext), blob);
+          } catch(err) {
+            console.warn('skip', it.url, err);
+          }
+        }
+        const content = await zip.generateAsync({type:'blob'});
+        const url = URL.createObjectURL(content);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = (metadata && metadata.title ? metadata.title.replace(/[^a-z0-9]/gi,'_') : 'download') + '.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        downloadAllBtn.textContent = '✅ Downloaded ZIP';
+        setTimeout(() => downloadAllBtn.textContent = '⬇️ Download All', 3000);
+      } catch(e) {
+        console.warn('zip failed', e);
+        // fallback to sequential downloads
+        for(const [i, it] of resolved.entries()) {
+          triggerDownload(it.url, metadata, i);
+        }
+        downloadAllBtn.textContent = '⬇️ Downloading...';
+      }
+    } else {
+      // no JSZip, fallback to sequential downloads
+      for(const [i, it] of resolved.entries()) {
+        triggerDownload(it.url, metadata, i);
+      }
+      downloadAllBtn.textContent = '⬇️ Downloading...';
+    }
+
+    setTimeout(() => { downloadAllBtn.disabled = false; downloadAllBtn.textContent = '⬇️ Download All'; }, 3000);
+  };
+
+  card.appendChild(downloadAllBtn);
+
+  // Render each item with its own download button
+  resolved.forEach((it, idx) => {
+    const box = document.createElement('div');
+    box.style.background = 'rgba(0,0,0,0.2)';
+    box.style.padding = '8px';
+    box.style.borderRadius = '8px';
+    box.style.display = 'flex';
+    box.style.flexDirection = 'column';
+    box.style.alignItems = 'stretch';
+
+    const info = document.createElement('div');
+    info.style.fontSize = '13px';
+    info.style.marginBottom = '6px';
+    info.textContent = `${it.type.toUpperCase()} • ${truncateUrl(it.url)}`;
+    box.appendChild(info);
+
+    if(it.type === 'image') {
+      const img = document.createElement('img');
+      img.src = it.url;
+      img.style.maxHeight = '200px';
+      img.style.objectFit = 'cover';
+      box.appendChild(img);
+    } else if(it.type === 'video') {
+      const vid = document.createElement('video');
+      vid.controls = true;
+      vid.preload = 'metadata';
+      tryVideoSource(vid, it.url);
+      box.appendChild(vid);
+    } else if(it.type === 'audio') {
+      const aud = document.createElement('audio');
+      aud.controls = true;
+      aud.preload = 'metadata';
+      tryAudioSource(aud, it.url);
+      box.appendChild(aud);
+    } else {
+      const link = document.createElement('a');
+      link.href = it.url;
+      link.target = '_blank';
+      link.textContent = 'Open file';
+      box.appendChild(link);
+    }
+
+    const dl = document.createElement('button');
+    dl.className = 'btn-alt';
+    dl.style.marginTop = '8px';
+    dl.textContent = '⬇️ Download';
+    dl.onclick = () => triggerDownload(it.url, metadata, idx);
+    box.appendChild(dl);
+
+    itemsWrap.appendChild(box);
+  });
+
+  card.appendChild(itemsWrap);
+  previewArea.appendChild(card);
+}
+
+// helper: trigger download of a single url, attempt CORS-friendly fetch then blob link
+async function triggerDownload(url, metadata, idx) {
+  try {
+    const resp = await fetch(url);
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+    const ext = (blob.type && blob.type.startsWith('image/')) ? ('.' + blob.type.split('/')[1]) : (blob.type && blob.type.startsWith('video/') ? '.mp4' : '');
+    let filename = (metadata && metadata.title) ? metadata.title.replace(/[^a-z0-9]/gi,'_') : 'file';
+    filename += '_' + (idx+1) + (ext || '');
+    const dlUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = dlUrl; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(dlUrl), 30000);
+  } catch(e) {
+    // fallback: open direct link in new tab for manual save
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
+  }
+}
+
+/* --- END: Enhanced detection + multi-render + Download All --- */
 function renderMediaUI(url, metadata, categorized, mediaType, platform) {
   previewArea.innerHTML = '';
   
