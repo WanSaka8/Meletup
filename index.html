@@ -610,9 +610,15 @@ function categorizeUrls(urls = []) {
     const lower = url.toLowerCase();
     if (lower.includes('googlevideo.com') || lower.includes('fbcdn') || lower.includes('cdn') || lower.includes('video')) {
       categorized.videos.push(url);
-    } else if (lower.includes('instagram') && lower.includes('scontent')) {
-      // instagram scontent URLs can be images or videos; keep as others to avoid misclassifying
-      categorized.others.push(url);
+    } if (lower.includes('instagram') && (lower.includes('scontent') || lower.includes('cdninstagram') || lower.includes('instagram-static') || lower.includes('/vp/'))) {
+      // try to decide if instagram link is image or video
+      if (patterns.image.test(url) || lower.includes('/s640x640') || lower.includes('/s320x320') || lower.includes('=jpg') || lower.includes('format=jpg') || lower.includes('jpg')) {
+        categorized.images.push(url);
+      } else if (lower.includes('/vp/') || lower.includes('/v/') || lower.includes('.mp4') || lower.includes('video')) {
+        categorized.videos.push(url);
+      } else {
+        categorized.others.push(url);
+      }
     } else {
       categorized.others.push(url);
     }
@@ -760,6 +766,21 @@ async function mainFetch() {
     // Select best media based on platform
     let chosenUrl = null;
     let mediaType = 'video';
+
+    // Prefer images for Instagram/Facebook when available
+    if ((platform === 'instagram' || platform === 'facebook')) {
+      if (categorized.images && categorized.images.length > 1) {
+        // multiple images -> render multi UI and exit
+        renderMediaMulti(categorized, extractMetadata(json), platform);
+        btnFetch.disabled = false;
+        btnText.textContent = 'Download';
+        return;
+      } else if (categorized.images && categorized.images.length === 1) {
+        chosenUrl = categorized.images[0];
+        mediaType = 'image';
+      }
+    }
+
     
     if(platform === 'ytmp3' && categorized.audios.length > 0) {
       chosenUrl = categorized.audios[0];
@@ -1043,27 +1064,57 @@ async function renderMediaMulti(categorized, metadata, platform) {
 }
 
 // helper: trigger download of a single url, attempt CORS-friendly fetch then blob link
+
 async function triggerDownload(url, metadata, idx) {
   try {
     const resp = await fetch(url);
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const blob = await resp.blob();
-    const ext = (blob.type && blob.type.startsWith('image/')) ? ('.' + blob.type.split('/')[1]) : (blob.type && blob.type.startsWith('video/') ? '.mp4' : '');
-    let filename = (metadata && metadata.title) ? metadata.title.replace(/[^a-z0-9]/gi,'_') : 'file';
-    filename += '_' + (idx+1) + (ext || '');
+
+    // Deteksi ekstensi otomatis
+    const ct = resp.headers.get('content-type') || blob.type || '';
+    let ext = '';
+    if (ct.startsWith('image/')) {
+      ext = '.' + ct.split('/')[1].split(';')[0];
+    } else if (ct.startsWith('video/')) {
+      ext = '.' + ct.split('/')[1].split(';')[0];
+    } else if (ct.startsWith('audio/')) {
+      ext = '.' + ct.split('/')[1].split(';')[0];
+    } else {
+      const m = url.match(/\.([a-zA-Z0-9]+)(\?|$)/);
+      ext = m ? '.' + m[1] : '.jpg';
+    }
+
+    let filename = (metadata && metadata.title)
+      ? metadata.title.replace(/[^a-z0-9]/gi, '_')
+      : 'file';
+    filename += '_' + (idx + 1) + ext;
+
     const dlUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = dlUrl; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    a.href = dlUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     setTimeout(() => URL.revokeObjectURL(dlUrl), 30000);
-  } catch(e) {
-    // fallback: open direct link in new tab for manual save
+  } catch (e) {
+    // fallback open direct
     const a = document.createElement('a');
-    a.href = url; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
+    a.href = url;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 }
-
-/* --- END: Enhanced detection + multi-render + Download All --- */
+/* --- END/* --- END: Enhanced detection + multi-render + Download All --- */
 function renderMediaUI(url, metadata, categorized, mediaType, platform) {
+  // If multiple images found, use multi renderer
+  if (categorized && categorized.images && categorized.images.length > 1) {
+    return renderMediaMulti(categorized, metadata, platform);
+  }
+
   previewArea.innerHTML = '';
   
   // Create preview card
@@ -1281,45 +1332,33 @@ async function tryAudioSource(audioElement, url) {
   };
 }
 
+
 async function downloadMedia(url, metadata, mediaType, platform) {
   const progressDiv = document.createElement('div');
   progressDiv.className = 'success-msg';
   progressDiv.innerHTML = '📥 Starting download...';
   previewArea.appendChild(progressDiv);
-  
+
   try {
-    // Determine filename with proper extension
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+
+    // Deteksi ekstensi file
+    const ct = resp.headers.get('content-type') || blob.type || '';
+    let extension = '';
+    if (ct.startsWith('image/')) extension = '.' + ct.split('/')[1].split(';')[0];
+    else if (ct.startsWith('video/')) extension = '.' + ct.split('/')[1].split(';')[0];
+    else if (ct.startsWith('audio/')) extension = '.' + ct.split('/')[1].split(';')[0];
+    else {
+      const m = url.match(/\.([a-zA-Z0-9]+)(\?|$)/);
+      extension = m ? '.' + m[1] : (mediaType === 'image' ? '.jpg' : '.mp4');
+    }
+
     let filename = metadata.title || 'download';
     filename = filename.replace(/[^a-z0-9]/gi, '_').replace(/__+/g, '_');
-    
-    // Add proper extension based on media type and platform
-    let extension = '';
-    if(platform === 'ytmp3' || mediaType === 'audio') {
-      extension = '.mp3';
-    } else if(platform === 'ytmp4' || mediaType === 'video') {
-      extension = '.mp4';
-    } else if(mediaType === 'image') {
-      extension = '.jpg';
-    } else {
-      // Try to detect from URL
-      const urlLower = url.toLowerCase();
-      if(urlLower.includes('.mp4')) extension = '.mp4';
-      else if(urlLower.includes('.mp3')) extension = '.mp3';
-      else if(urlLower.includes('.webm')) extension = '.webm';
-      else if(urlLower.includes('.m4a')) extension = '.m4a';
-      else extension = '.mp4'; // Default to mp4
-    }
-    
-    if(!filename.endsWith(extension)) {
-      filename += extension;
-    }
-    
-    // Try to download with progress
-    const blob = await downloadWithProgress(url, (progress) => {
-      progressDiv.innerHTML = `📥 Downloading... ${progress}%`;
-    });
-    
-    // Create download link
+    if (!filename.endsWith(extension)) filename += extension;
+
     const downloadUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = downloadUrl;
@@ -1327,20 +1366,16 @@ async function downloadMedia(url, metadata, mediaType, platform) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    
-    // Clean up
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 30000);
-    
+
     progressDiv.innerHTML = '✅ Download complete!';
     setTimeout(() => progressDiv.remove(), 3000);
-    
-  } catch(error) {
+  } catch (error) {
     console.error('Download error:', error);
     progressDiv.className = 'error-msg';
-    progressDiv.innerHTML = `❌ Download failed. Try the direct link instead.`;
+    progressDiv.innerHTML = '❌ Download failed. Try the direct link instead.';
   }
 }
-
 async function downloadWithProgress(url, onProgress) {
   let lastError = null;
   
