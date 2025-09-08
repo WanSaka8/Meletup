@@ -443,6 +443,7 @@
 
   .btn-download::before {
     font-size: 1.2em;
+    content: "⬇️";
   }
 
   .btn-download:hover {
@@ -616,6 +617,7 @@
           <option value="auto">🔍 Auto Detect</option>
           <option value="ytmp4">📹 YouTube Video</option>
           <option value="ytmp3">🎵 YouTube Audio</option>
+          <option value="ytshorts">🎬 YouTube Shorts</option>
           <option value="tiktok">🎭 TikTok</option>
           <option value="instagram">📷 Instagram</option>
           <option value="facebook">👤 Facebook</option>
@@ -670,6 +672,9 @@ function detectPlatformByUrl(url) {
   url = url.toLowerCase();
 
   if(url.includes('youtube.com') || url.includes('youtu.be')) {
+    if(url.includes('youtube.com/shorts/') || url.includes('youtu.be/shorts/')) {
+      return 'ytshorts';
+    }
     return 'ytmp4'; // Default to video
   }
   if(url.includes('tiktok.com') || url.includes('vt.tiktok')) return 'tiktok';
@@ -699,8 +704,6 @@ function collectUrls(obj, urls = []) {
 
   return urls;
 }
-
-
 
 function categorizeUrls(urls = []) {
   const unique = [...new Set(urls.map(u => (u || '').trim()).filter(Boolean))];
@@ -774,8 +777,6 @@ function fixInstagramImageUrl(url) {
   return url;
 }
 
-
-
 function pickBestVideo(videos = []) {
   if(!videos.length) return null;
 
@@ -834,7 +835,9 @@ async function mainFetch() {
   debugToggle.style.display = 'block';
 
   try {
-    const apiUrl = `${API_BASE}/${platform}?link=${encodeURIComponent(userUrl)}&apikey=${API_KEY}`;
+    // Handle YouTube Shorts by using ytmp4 endpoint
+    const actualPlatform = platform === 'ytshorts' ? 'ytmp4' : platform;
+    const apiUrl = `${API_BASE}/${actualPlatform}?link=${encodeURIComponent(userUrl)}&apikey=${API_KEY}`;
     const response = await fetch(apiUrl);
 
     let json;
@@ -847,7 +850,6 @@ async function mainFetch() {
     // Update debug info
     debugEl.textContent = JSON.stringify(json, null, 2);
 
-
     // Collect all URLs from response
     let allUrls = collectUrls(json);
 
@@ -855,9 +857,9 @@ async function mainFetch() {
       const data = json.data;
 
       // YouTube specific handling: support multiple possible fields
-      if(platform === 'ytmp4' || platform === 'ytmp3') {
+      if(actualPlatform === 'ytmp4' || actualPlatform === 'ytmp3' || platform === 'ytshorts') {
         // common direct fields
-        ['video','audio','url','download','link','source','file','mp4','hd','sd'].forEach(k => {
+        ['video','audio','url','download','link','source','file','mp4','hd','sd','dlink'].forEach(k => {
           if(data[k]) {
             if(typeof data[k] === 'string') allUrls.push(data[k]);
             else if(Array.isArray(data[k])) allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
@@ -929,7 +931,6 @@ async function mainFetch() {
       }
     }
 
-
     if(platform === 'ytmp3' && categorized.audios.length > 0) {
       chosenUrl = categorized.audios[0];
       mediaType = 'audio';
@@ -990,13 +991,19 @@ function extractMetadata(json) {
     meta.duration = data.duration || null;
     meta.size = data.size || data.filesize || null;
     meta.author = data.author || data.username || data.channel || null;
+    
+    // Handle YouTube metadata specifically
+    if (data.metadata) {
+      const metadata = data.metadata;
+      meta.title = metadata.title || meta.title;
+      meta.thumbnail = metadata.thumbnail || meta.thumbnail;
+      meta.duration = metadata.duration ? metadata.duration.timestamp || metadata.duration : meta.duration;
+      meta.author = metadata.author || meta.author;
+    }
   }
 
   return meta;
 }
-
-
-/* --- START: Enhanced detection + multi-render + Download All --- */
 
 // Try to detect content-type via HEAD request; returns mime or null
 async function detectContentType(url) {
@@ -1018,8 +1025,6 @@ async function detectContentType(url) {
   }
   return null;
 }
-
-// Determine media type for a given url using extension + content-type fallback
 
 // Determine media type for a given url using extension + content-type fallback
 async function determineMediaType(url) {
@@ -1046,7 +1051,6 @@ async function determineMediaType(url) {
   // couldn't determine
   return 'unknown';
 }
-
 
 // Render multiple media items and provide Download All
 async function renderMediaMulti(categorized, metadata, platform) {
@@ -1212,9 +1216,6 @@ async function renderMediaMulti(categorized, metadata, platform) {
 }
 
 // helper: trigger download of a single url, attempt CORS-friendly fetch then blob link
-
-
-
 async function triggerDownload(url, metadata, idx) {
   try {
     url = fixInstagramImageUrl(url); // apply Instagram fix
@@ -1270,7 +1271,7 @@ async function triggerDownload(url, metadata, idx) {
     a.remove();
   }
 }
-/* --- END/* --- END: Enhanced detection + multi-render + Download All --- */
+
 function renderMediaUI(url, metadata, categorized, mediaType, platform) {
   // If multiple images found, use multi renderer
   if (categorized && categorized.images && categorized.images.length > 1) {
@@ -1494,7 +1495,6 @@ async function tryAudioSource(audioElement, url) {
   };
 }
 
-
 async function downloadMedia(url, metadata, mediaType, platform) {
   const progressDiv = document.createElement('div');
   progressDiv.className = 'success-msg';
@@ -1538,6 +1538,7 @@ async function downloadMedia(url, metadata, mediaType, platform) {
     progressDiv.innerHTML = '❌ Download failed. Try the direct link instead.';
   }
 }
+
 async function downloadWithProgress(url, onProgress) {
   let lastError = null;
 
