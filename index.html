@@ -820,12 +820,12 @@ async function mainFetch() {
   const userUrl = inputUrl.value.trim();
   let platform = platformSel.value;
 
-  if(!userUrl) {
+  if (!userUrl) {
     showError('Please enter a valid URL');
     return;
   }
 
-  if(platform === 'auto') {
+  if (platform === 'auto') {
     platform = detectPlatformByUrl(userUrl);
   }
 
@@ -844,7 +844,7 @@ async function mainFetch() {
     let json;
     try {
       json = await response.json();
-    } catch(e) {
+    } catch (e) {
       json = { raw: await response.text() };
     }
 
@@ -854,57 +854,66 @@ async function mainFetch() {
     // Collect all URLs from response
     let allUrls = collectUrls(json);
 
-    if(json && json.data) {
+    if (json && json.data) {
       const data = json.data;
 
-      // YouTube specific handling: support multiple possible fields
-      if(actualPlatform === 'ytmp4' || actualPlatform === 'ytmp3' || platform === 'ytshorts') {
+      // ✅ YouTube specific handling
+      if (actualPlatform === 'ytmp4' || actualPlatform === 'ytmp3' || platform === 'ytshorts') {
+        // khusus ytmp4 → ambil dlink langsung
+        if (data.dlink) {
+          allUrls.push(data.dlink);
+        }
+
         // common direct fields
-        ['video','audio','url','download','link','source','file','mp4','hd','sd','dlink'].forEach(k => {
-          if(data[k]) {
-            if(typeof data[k] === 'string') allUrls.push(data[k]);
-            else if(Array.isArray(data[k])) allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
-            else if(typeof data[k] === 'object' && data[k].url) allUrls.push(data[k].url);
+        ['video', 'audio', 'url', 'download', 'link', 'source', 'file', 'mp4', 'hd', 'sd'].forEach(k => {
+          if (data[k]) {
+            if (typeof data[k] === 'string') allUrls.push(data[k]);
+            else if (Array.isArray(data[k])) {
+              allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
+            } else if (typeof data[k] === 'object' && data[k].url) {
+              allUrls.push(data[k].url);
+            }
           }
         });
 
         // array of links/formats
-        if(data.links && Array.isArray(data.links)) {
+        if (data.links && Array.isArray(data.links)) {
           allUrls = allUrls.concat(data.links.map(i => i.url || i.link || i.download).filter(Boolean));
         }
-        if(data.formats && Array.isArray(data.formats)) {
+        if (data.formats && Array.isArray(data.formats)) {
           allUrls = allUrls.concat(data.formats.map(i => i.url || i.link || i.download).filter(Boolean));
         }
       }
 
-      // Facebook specific handling: prefer hd/sd video fields, avoid thumbnails
-      if(platform === 'facebook') {
-        if(data.hd && typeof data.hd === 'string') allUrls.push(data.hd);
-        if(data.sd && typeof data.sd === 'string') allUrls.push(data.sd);
+      // Facebook specific handling
+      if (platform === 'facebook') {
+        if (data.hd && typeof data.hd === 'string') allUrls.push(data.hd);
+        if (data.sd && typeof data.sd === 'string') allUrls.push(data.sd);
 
-        // sometimes facebook returns an array or object of files
-        ['video','videos','file','download','url','link'].forEach(k => {
-          if(data[k]) {
-            if(typeof data[k] === 'string') allUrls.push(data[k]);
-            else if(Array.isArray(data[k])) allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
-            else if(typeof data[k] === 'object' && data[k].url) allUrls.push(data[k].url);
+        ['video', 'videos', 'file', 'download', 'url', 'link'].forEach(k => {
+          if (data[k]) {
+            if (typeof data[k] === 'string') allUrls.push(data[k]);
+            else if (Array.isArray(data[k])) {
+              allUrls = allUrls.concat(data[k].map(i => typeof i === 'string' ? i : i.url || i.link).filter(Boolean));
+            } else if (typeof data[k] === 'object' && data[k].url) {
+              allUrls.push(data[k].url);
+            }
           }
         });
 
-        // audio fallback
-        if(data.audio && typeof data.audio === 'string') allUrls.push(data.audio);
+        if (data.audio && typeof data.audio === 'string') allUrls.push(data.audio);
       }
 
-      // Generic fields fallback for other platforms
-      ['video','videos','videoUrl','video_url','media','mediaUrl','download','downloadUrl','dlink','url','link','file','mp4','hd','sd','source'].forEach(key => {
-        if(data[key]) {
-          if(typeof data[key] === 'string') {
+      // Generic fields fallback
+      ['video', 'videos', 'videoUrl', 'video_url', 'media', 'mediaUrl', 'download', 'downloadUrl', 'dlink', 'url', 'link', 'file', 'mp4', 'hd', 'sd', 'source'].forEach(key => {
+        if (data[key]) {
+          if (typeof data[key] === 'string') {
             allUrls.push(data[key]);
-          } else if(Array.isArray(data[key])) {
-            allUrls = allUrls.concat(data[key].map(item => 
+          } else if (Array.isArray(data[key])) {
+            allUrls = allUrls.concat(data[key].map(item =>
               typeof item === 'string' ? item : item.url || item.link || item.download
             ).filter(Boolean));
-          } else if(typeof data[key] === 'object' && data[key].url) {
+          } else if (typeof data[key] === 'object' && data[key].url) {
             allUrls.push(data[key].url);
           }
         }
@@ -914,45 +923,31 @@ async function mainFetch() {
     // Categorize URLs
     const categorized = categorizeUrls(allUrls);
 
-    // Select best media based on platform
+    // Pilih media terbaik
     let chosenUrl = null;
     let mediaType = 'video';
 
-    // Prefer images for Instagram/Facebook when available
-    if ((platform === 'instagram' || platform === 'facebook')) {
-      if (categorized.images && categorized.images.length > 1) {
-        // multiple images -> render multi UI and exit
-        renderMediaMulti(categorized, extractMetadata(json), platform);
-        btnFetch.disabled = false;
-        btnText.textContent = 'Download';
-        return;
-      } else if (categorized.images && categorized.images.length === 1) {
-        chosenUrl = categorized.images[0];
-        mediaType = 'image';
-      }
-    }
-
-    if(platform === 'ytmp3' && categorized.audios.length > 0) {
+    if (platform === 'ytmp3' && categorized.audios.length > 0) {
       chosenUrl = categorized.audios[0];
       mediaType = 'audio';
-    } else if(categorized.videos.length > 0) {
+    } else if (categorized.videos.length > 0) {
       chosenUrl = pickBestVideo(categorized.videos);
       mediaType = 'video';
-    } else if(categorized.m3u8.length > 0) {
+    } else if (categorized.m3u8.length > 0) {
       chosenUrl = categorized.m3u8[0];
       mediaType = 'video';
-    } else if(categorized.audios.length > 0) {
+    } else if (categorized.audios.length > 0) {
       chosenUrl = categorized.audios[0];
       mediaType = 'audio';
-    } else if(categorized.others.length > 0) {
+    } else if (categorized.others.length > 0) {
       chosenUrl = categorized.others[0];
       mediaType = 'unknown';
-    } else if(categorized.images.length > 0) {
+    } else if (categorized.images.length > 0) {
       chosenUrl = categorized.images[0];
       mediaType = 'image';
     }
 
-    if(!chosenUrl) {
+    if (!chosenUrl) {
       showError('No downloadable media found in the response');
       debugToggle.textContent = '🔧 Show Debug Info (check for errors)';
       return;
@@ -964,10 +959,10 @@ async function mainFetch() {
     // Extract metadata
     const metadata = extractMetadata(json);
 
-    // Render the UI
+    // Render UI
     renderMediaUI(chosenUrl, metadata, categorized, mediaType, platform);
 
-  } catch(error) {
+  } catch (error) {
     console.error('Fetch error:', error);
     showError(`Failed to fetch media: ${error.message}`);
   } finally {
@@ -975,6 +970,7 @@ async function mainFetch() {
     btnText.textContent = 'Download';
   }
 }
+
 
 function extractMetadata(json) {
   const meta = {
