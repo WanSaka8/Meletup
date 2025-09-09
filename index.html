@@ -667,6 +667,34 @@ debugToggle.addEventListener('click', () => {
   debugToggle.textContent = debugEl.style.display === 'none' ? '🔧 Show Debug Info' : '🔧 Hide Debug Info';
 });
 
+function normalizeYouTubeUrl(url) {
+  try {
+    let u = new URL(url);
+
+    // Link pendek youtu.be
+    if (u.hostname.includes('youtu.be')) {
+      const id = u.pathname.replace('/', '');
+      return `https://www.youtube.com/watch?v=${id}`;
+    }
+
+    // Shorts
+    if (u.pathname.startsWith('/shorts/')) {
+      const id = u.pathname.split('/')[2];
+      return `https://www.youtube.com/watch?v=${id}`;
+    }
+
+    // Sudah watch?v
+    if (u.hostname.includes('youtube.com') && u.searchParams.has('v')) {
+      return `https://www.youtube.com/watch?v=${u.searchParams.get('v')}`;
+    }
+
+    return url;
+  } catch (e) {
+    return url;
+  }
+}
+
+
 /* Platform Detection */
 function detectPlatformByUrl(url) {
   if(!url) return 'auto';
@@ -817,7 +845,11 @@ function pickBestVideo(videos = []) {
 
 /* Main Fetch Function */
 async function mainFetch() {
-  const userUrl = inputUrl.value.trim();
+  let userUrl = inputUrl.value.trim();
+
+  // 🔥 Normalisasi URL YouTube biar selalu jadi format watch?v=
+  userUrl = normalizeYouTubeUrl(userUrl);
+
   let platform = platformSel.value;
 
   if (!userUrl) {
