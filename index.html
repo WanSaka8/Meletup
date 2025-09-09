@@ -647,6 +647,7 @@ const API_KEY = "key-Nara";
 const PROXIES = [
   "https://corsproxy.io/?",
   "https://api.allorigins.win/raw?url=",
+
 ];
 
 /* DOM Elements */
@@ -1454,26 +1455,48 @@ function displayUrlList(categorized) {
 }
 
 async function tryVideoSource(videoElement, url) {
-  // First try direct URL
-  videoElement.src = url;
+  try {
+    // Coba set direct src dulu
+    videoElement.src = url;
 
-  // If CORS fails, try with proxy
-  videoElement.onerror = async () => {
-    for(const proxy of PROXIES) {
+    // Kalau gagal load → fallback ambil blob
+    videoElement.onerror = async () => {
       try {
-        videoElement.src = proxy + encodeURIComponent(url);
-        await new Promise((resolve, reject) => {
-          videoElement.onloadedmetadata = resolve;
-          videoElement.onerror = reject;
-          setTimeout(reject, 3000);
+        const resp = await fetch(url, {
+          mode: 'cors',
+          headers: { 'Referer': location.origin }
         });
-        return; // Success
-      } catch(e) {
-        continue;
+
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        videoElement.src = blobUrl;
+      } catch (e) {
+        console.warn("Direct play gagal, pakai proxy fallback…");
+        for (const proxy of PROXIES) {
+          try {
+            const proxiedUrl = proxy + encodeURIComponent(url);
+            const resp2 = await fetch(proxiedUrl);
+            if (!resp2.ok) continue;
+            const blob2 = await resp2.blob();
+            videoElement.src = URL.createObjectURL(blob2);
+            return;
+          } catch (_) {
+            continue;
+          }
+        }
+        videoElement.outerHTML = `<div style="color:#ff6b9d;font-weight:bold">
+          ⚠️ Video tidak bisa diputar otomatis, klik 
+          <a href="${url}" target="_blank" style="color:#4fc3f7">di sini</a> untuk buka manual.
+        </div>`;
       }
-    }
-  };
+    };
+  } catch (err) {
+    console.error('Video load error:', err);
+  }
 }
+
 
 async function tryAudioSource(audioElement, url) {
   audioElement.src = url;
@@ -1498,46 +1521,72 @@ async function tryAudioSource(audioElement, url) {
 async function downloadMedia(url, metadata, mediaType, platform) {
   const progressDiv = document.createElement('div');
   progressDiv.className = 'success-msg';
-  progressDiv.innerHTML = '📥 Starting download...';
+  progressDiv.innerHTML = '📥 Sedang menyiapkan file...';
   previewArea.appendChild(progressDiv);
 
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, {
+      mode: 'cors',
+      headers: { 'Referer': location.origin }
+    });
+
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
     const blob = await resp.blob();
 
-    // Deteksi ekstensi file
-    const ct = resp.headers.get('content-type') || blob.type || '';
-    let extension = '';
-    if (ct.startsWith('image/')) extension = '.' + ct.split('/')[1].split(';')[0];
-    else if (ct.startsWith('video/')) extension = '.' + ct.split('/')[1].split(';')[0];
-    else if (ct.startsWith('audio/')) extension = '.' + ct.split('/')[1].split(';')[0];
-    else {
-      const m = url.match(/\.([a-zA-Z0-9]+)(\?|$)/);
-      extension = m ? '.' + m[1] : (mediaType === 'image' ? '.jpg' : '.mp4');
+    // Ambil Content-Type dari header atau blob.type
+    let ct = resp.headers.get('content-type') || blob.type || '';
+    ct = ct.toLowerCase();
+
+    let ext = '';
+
+    // Prioritas 1 → dari Content-Type
+    if (ct.startsWith('video/')) {
+      ext = '.' + ct.split('/')[1].split(';')[0];
+    } else if (ct.startsWith('audio/')) {
+      ext = '.' + ct.split('/')[1].split(';')[0];
+    } else if (ct.startsWith('image/')) {
+      ext = '.' + ct.split('/')[1].split(';')[0];
+    } else {
+      // Prioritas 2 → coba cari ekstensi langsung dari URL
+      const urlMatch = url.match(/\.([a-zA-Z0-9]+)(\?|$)/);
+      if (urlMatch && urlMatch[1]) {
+        ext = '.' + urlMatch[1];
+      } else {
+        // Prioritas 3 → fallback sesuai mediaType
+        if (mediaType === 'video') ext = '.mp4';
+        else if (mediaType === 'audio') ext = '.mp3';
+        else if (mediaType === 'image') ext = '.jpg';
+        else ext = '.mp4'; // default terakhir
+      }
     }
 
-    let filename = metadata.title || 'download';
-    filename = filename.replace(/[^a-z0-9]/gi, '_').replace(/__+/g, '_');
-    if (!filename.endsWith(extension)) filename += extension;
+    // Tentukan nama file
+    let filename = (metadata.title || 'download')
+      .replace(/[^a-z0-9]/gi, '_')
+      .replace(/__+/g, '_');
+    if (!filename.endsWith(ext)) filename += ext;
 
-    const downloadUrl = URL.createObjectURL(blob);
+    // Buat link download
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = downloadUrl;
+    a.href = blobUrl;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(downloadUrl), 30000);
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
 
-    progressDiv.innerHTML = '✅ Download complete!';
+    progressDiv.innerHTML = '✅ Download selesai!';
     setTimeout(() => progressDiv.remove(), 3000);
-  } catch (error) {
-    console.error('Download error:', error);
+  } catch (e) {
+    console.warn('Download gagal:', e);
     progressDiv.className = 'error-msg';
-    progressDiv.innerHTML = '❌ Download failed. Try the direct link instead.';
+    progressDiv.innerHTML = `❌ Download gagal otomatis, 
+      <a href="${url}" target="_blank" style="color:#4fc3f7">klik di sini untuk direct download</a>`;
   }
 }
+
 
 async function downloadWithProgress(url, onProgress) {
   let lastError = null;
